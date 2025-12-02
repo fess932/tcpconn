@@ -38,12 +38,16 @@ conn.Connect()
 // Статистика собирается автоматически
 conn.Write([]byte("Hello"))
 
-// Получение статистики
+// Получение статистики (только через snapshot!)
 snapshot := conn.GetStatisticsSnapshot()
-stats := conn.GetStatistics()
 
 // Сброс статистики
 conn.ResetStatistics()
+
+// Если нужен прямой доступ - используйте внешний объект:
+stats := tcpconn.NewStatistics()
+conn, _ := tcpconn.NewTCPConnectionWithStats(4096, stats)
+// Теперь можно использовать stats напрямую
 
 📋 ДОСТУПНЫЕ МЕТРИКИ
 ─────────────────────────────────────────────────────────────────
@@ -105,12 +109,13 @@ ConcurrentReads:        ~84  ns/op  (0 B/op, 0 allocs)
            tcpconn.FormatRate(snap.SendRateBytesPerSec))
    }
 
-2. Измерение RTT:
+2. Измерение RTT (с внешним объектом):
    ──────────────────────────────────────────────────────────
+   rttStats := tcpconn.NewStatistics()
    start := time.Now()
    // ... отправка запроса и получение ответа ...
    rtt := time.Since(start).Microseconds()
-   stats.RecordLatency(uint64(rtt))
+   rttStats.RecordLatency(uint64(rtt))
 
 3. Обнаружение потерь:
    ──────────────────────────────────────────────────────────
@@ -122,11 +127,11 @@ ConcurrentReads:        ~84  ns/op  (0 B/op, 0 allocs)
 4. Оповещения:
    ──────────────────────────────────────────────────────────
    snap := stats.GetSnapshot()
-   
+
    if snap.PacketLossRate > 10.0 {
        alert("Критические потери пакетов")
    }
-   
+
    if snap.MaxLatencyUs > 1000 {
        alert("Высокая задержка")
    }
@@ -139,8 +144,17 @@ tcpconn.FormatRate(1024*1024)      // "1.00 MiB/s"
 
 snapshot.String()                  // полный отчёт
 
+⚠️  ВАЖНО: ПОТОКОБЕЗОПАСНОСТЬ
+─────────────────────────────────────────────────────────────
+❌ НЕ используйте GetStatistics() - метод удалён!
+✅ Используйте GetStatisticsSnapshot() - возвращает копию
+✅ Или создайте внешний объект через NewTCPConnectionWithStats()
+
+Почему? GetStatistics() возвращал указатель, что обходило защиту
+от конкурентного доступа и могло привести к race conditions.
+
 📚 ДОКУМЕНТАЦИЯ
-─────────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────
 Полная документация:     STATISTICS.md
 Примеры кода:            statistics_examples_test.go
 Тесты:                   statistics_test.go

@@ -21,6 +21,13 @@ type TCPConnection struct {
 
 // NewTCPConnection создает новое TCP соединение
 func NewTCPConnection(bufferSize int) (*TCPConnection, error) {
+	return NewTCPConnectionWithStats(bufferSize, nil)
+}
+
+// NewTCPConnectionWithStats создает новое TCP соединение с возможностью передать свой объект Statistics.
+// Если stats == nil, создается новый объект статистики.
+// Это позволяет разделять статистику между несколькими соединениями или управлять ей извне.
+func NewTCPConnectionWithStats(bufferSize int, stats *Statistics) (*TCPConnection, error) {
 	if bufferSize <= 0 {
 		bufferSize = 4096
 	}
@@ -35,11 +42,15 @@ func NewTCPConnection(bufferSize int) (*TCPConnection, error) {
 		return nil, fmt.Errorf("failed to create write buffer: %w", err)
 	}
 
+	if stats == nil {
+		stats = NewStatistics()
+	}
+
 	return &TCPConnection{
 		state:       NewTCPStateMachine(),
 		readBuffer:  readBuf,
 		writeBuffer: writeBuf,
-		stats:       NewStatistics(),
+		stats:       stats,
 		closed:      false,
 	}, nil
 }
@@ -181,13 +192,6 @@ func (c *TCPConnection) AvailableToWrite() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.writeBuffer.FreeSpace()
-}
-
-// GetStatistics возвращает статистику соединения
-func (c *TCPConnection) GetStatistics() *Statistics {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.stats
 }
 
 // GetStatisticsSnapshot возвращает снимок статистики

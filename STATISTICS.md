@@ -262,16 +262,37 @@ conn.Connect()
 conn.Write([]byte("Hello"))
 conn.Write([]byte("World"))
 
-// Получение статистики
+// Получение статистики (всегда используйте Snapshot)
 snapshot := conn.GetStatisticsSnapshot()
 fmt.Printf("Отправлено пакетов: %d\n", snapshot.PacketsSent)
-
-// Прямой доступ к объекту статистики
-stats := conn.GetStatistics()
-fmt.Printf("Байт отправлено: %d\n", stats.GetBytesSent())
+fmt.Printf("Байт отправлено: %d\n", snapshot.BytesSent)
 
 // Сброс статистики
 conn.ResetStatistics()
+```
+
+### Использование внешнего объекта Statistics
+
+Если нужен прямой доступ к объекту статистики (например, для разделения между соединениями):
+
+```go
+// Создаём общий объект статистики
+stats := tcpconn.NewStatistics()
+
+// Создаём соединения с общей статистикой
+conn1, _ := tcpconn.NewTCPConnectionWithStats(4096, stats)
+conn2, _ := tcpconn.NewTCPConnectionWithStats(4096, stats)
+
+// Оба соединения пишут в одну статистику
+conn1.Write([]byte("data1"))
+conn2.Write([]byte("data2"))
+
+// Получаем общую статистику
+fmt.Printf("Всего отправлено: %d пакетов\n", stats.GetPacketsSent())
+
+// Или через snapshot
+snapshot := stats.GetSnapshot()
+fmt.Printf("Общая скорость: %s\n", tcpconn.FormatRate(snapshot.SendRateBytesPerSec))
 ```
 
 ## Примеры использования
@@ -320,7 +341,8 @@ func main() {
 
 ```go
 func measureRTT(conn *tcpconn.TCPConnection) {
-    stats := conn.GetStatistics()
+    // Создаём отдельный объект для измерения RTT
+    rttStats := tcpconn.NewStatistics()
     
     for i := 0; i < 10; i++ {
         start := time.Now()
@@ -334,15 +356,20 @@ func measureRTT(conn *tcpconn.TCPConnection) {
         
         // Записываем задержку
         rtt := time.Since(start).Microseconds()
-        stats.RecordLatency(uint64(rtt))
+        rttStats.RecordLatency(uint64(rtt))
         
         time.Sleep(100 * time.Millisecond)
     }
     
+    // Получаем статистику RTT
     fmt.Printf("RTT: min=%dμs avg=%dμs max=%dμs\n",
-        stats.GetMinLatency(),
-        stats.GetAvgLatency(),
-        stats.GetMaxLatency())
+        rttStats.GetMinLatency(),
+        rttStats.GetAvgLatency(),
+        rttStats.GetMaxLatency())
+    
+    // Общая статистика соединения
+    snapshot := conn.GetStatisticsSnapshot()
+    fmt.Printf("Всего передано: %d пакетов\n", snapshot.PacketsSent)
 }
 ```
 
@@ -596,6 +623,9 @@ type Snapshot struct {
 5. **Храните снимки** для построения графиков и анализа трендов
 6. **Настройте оповещения** на критические пороговые значения
 7. **Логируйте статистику** для последующего анализа
+8. **Используйте GetStatisticsSnapshot()** вместо прямого доступа к Statistics
+9. **Разделяйте статистику** через NewTCPConnectionWithStats() если нужен внешний доступ
+10. **Не храните указатели** на внутренние объекты - используйте снимки
 
 ## Известные ограничения
 

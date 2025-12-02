@@ -408,6 +408,63 @@ func TestConnectionPool_Close(t *testing.T) {
 	}
 }
 
+func TestTCPConnection_WithExternalStats(t *testing.T) {
+	// Создаём внешний объект статистики
+	stats := NewStatistics()
+
+	// Создаём два соединения с общей статистикой
+	conn1, err := NewTCPConnectionWithStats(1024, stats)
+	if err != nil {
+		t.Fatalf("NewTCPConnectionWithStats() error = %v", err)
+	}
+
+	conn2, err := NewTCPConnectionWithStats(1024, stats)
+	if err != nil {
+		t.Fatalf("NewTCPConnectionWithStats() error = %v", err)
+	}
+
+	// Устанавливаем соединения
+	conn1.Connect()
+	conn2.Connect()
+
+	// Записываем данные через оба соединения
+	conn1.Write([]byte("data1"))
+	conn2.Write([]byte("data2"))
+
+	// Проверяем, что статистика общая
+	if got := stats.GetPacketsSent(); got != 2 {
+		t.Errorf("GetPacketsSent() = %v, want 2", got)
+	}
+
+	// Проверяем через snapshot первого соединения
+	snapshot1 := conn1.GetStatisticsSnapshot()
+	if snapshot1.PacketsSent != 2 {
+		t.Errorf("conn1.GetStatisticsSnapshot().PacketsSent = %v, want 2", snapshot1.PacketsSent)
+	}
+
+	// Проверяем через snapshot второго соединения
+	snapshot2 := conn2.GetStatisticsSnapshot()
+	if snapshot2.PacketsSent != 2 {
+		t.Errorf("conn2.GetStatisticsSnapshot().PacketsSent = %v, want 2", snapshot2.PacketsSent)
+	}
+}
+
+func TestTCPConnection_WithNilStats(t *testing.T) {
+	// При передаче nil должна создаться новая статистика
+	conn, err := NewTCPConnectionWithStats(1024, nil)
+	if err != nil {
+		t.Fatalf("NewTCPConnectionWithStats() error = %v", err)
+	}
+
+	conn.Connect()
+	conn.Write([]byte("test"))
+
+	snapshot := conn.GetStatisticsSnapshot()
+	if snapshot.PacketsSent != 1 {
+		t.Errorf("GetStatisticsSnapshot().PacketsSent = %v, want 1", snapshot.PacketsSent)
+	}
+}
+
 func BenchmarkTCPConnection_Write(b *testing.B) {
 	conn, _ := NewTCPConnection(4096)
 	conn.Connect()
