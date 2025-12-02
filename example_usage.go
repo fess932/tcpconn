@@ -14,6 +14,7 @@ type TCPConnection struct {
 	state       *TCPStateMachine
 	readBuffer  *RingBuffer
 	writeBuffer *RingBuffer
+	stats       *Statistics
 	mu          sync.RWMutex
 	closed      bool
 }
@@ -38,6 +39,7 @@ func NewTCPConnection(bufferSize int) (*TCPConnection, error) {
 		state:       NewTCPStateMachine(),
 		readBuffer:  readBuf,
 		writeBuffer: writeBuf,
+		stats:       NewStatistics(),
 		closed:      false,
 	}, nil
 }
@@ -95,14 +97,22 @@ func (c *TCPConnection) Write(data []byte) (int, error) {
 	defer c.mu.RUnlock()
 
 	if c.closed {
+		c.stats.RecordError()
 		return 0, io.ErrClosedPipe
 	}
 
 	if !c.state.CanSendData() {
+		c.stats.RecordError()
 		return 0, fmt.Errorf("cannot send data in state %s", c.state.GetState())
 	}
 
-	return c.writeBuffer.Write(data)
+	n, err := c.writeBuffer.Write(data)
+	if err == nil {
+		c.stats.RecordPacketSent(uint64(n))
+	} else {
+		c.stats.RecordError()
+	}
+	return n, err
 }
 
 // Read читает данные из буфера приема
@@ -115,10 +125,17 @@ func (c *TCPConnection) Read(buf []byte) (int, error) {
 	}
 
 	if !c.state.CanReceiveData() && c.readBuffer.IsEmpty() {
+		c.stats.RecordError()
 		return 0, fmt.Errorf("cannot receive data in state %s", c.state.GetState())
 	}
 
-	return c.readBuffer.Read(buf)
+	n, err := c.readBuffer.Read(buf)
+	if err == nil && n > 0 {
+		c.stats.RecordPacketReceived(uint64(n))
+	} else if err != nil {
+		c.stats.RecordError()
+	}
+	return n, err
 }
 
 // Close закрывает соединение
@@ -164,6 +181,27 @@ func (c *TCPConnection) AvailableToWrite() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.writeBuffer.FreeSpace()
+}
+
+// GetStatistics возвращает статистику соединения
+func (c *TCPConnection) GetStatistics() *Statistics {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.stats
+}
+
+// GetStatisticsSnapshot возвращает снимок статистики
+func (c *TCPConnection) GetStatisticsSnapshot() Snapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.stats.GetSnapshot()
+}
+
+// ResetStatistics сбрасывает статистику соединения
+func (c *TCPConnection) ResetStatistics() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stats.Reset()
 }
 
 // MessageProtocol представляет протокол с длиной сообщения
