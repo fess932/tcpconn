@@ -1,138 +1,123 @@
 package tcpv2
 
 import (
-	"bytes"
-	"encoding/binary"
-	"errors"
 	"fmt"
+	"net"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 )
 
-const (
-	// HeaderSize is the size of the packet header in bytes
-	HeaderSize = 13 // 4 (Seq) + 4 (Ack) + 1 (Flags) + 2 (Win) + 2 (DataLen)
-)
-
-// Flags
-const (
-	FlagSYN uint8 = 1 << iota
-	FlagACK
-	FlagFIN
-	FlagRST
-)
-
-// PacketHeader represents the header of our TCP-over-UDP packet
-type PacketHeader struct {
-	SeqNum     uint32
-	AckNum     uint32
-	Flags      uint8
-	WindowSize uint16
-	DataLen    uint16
-}
-
-// Packet represents a complete packet
+// Packet represents a TCP packet
 type Packet struct {
-	Header PacketHeader
-	Data   []byte
+	TCP     *layers.TCP
+	Payload []byte
 }
 
-// Encode encodes the packet into a byte slice
-func (p *Packet) Encode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	// Write Header
-	if err := binary.Write(buf, binary.BigEndian, p.Header.SeqNum); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, p.Header.AckNum); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, p.Header.Flags); err != nil {
-		return nil, err
-	}
-	if err := binary.Write(buf, binary.BigEndian, p.Header.WindowSize); err != nil {
-		return nil, err
-	}
-	// We calculate DataLen automatically, but for safety we write what's in header if 0, or update it
-	if p.Header.DataLen == 0 && len(p.Data) > 0 {
-		p.Header.DataLen = uint16(len(p.Data))
-	}
-	if err := binary.Write(buf, binary.BigEndian, p.Header.DataLen); err != nil {
-		return nil, err
+// NewPacket creates a new packet with the given parameters
+func NewPacket(srcPort, dstPort uint16, seq, ack uint32, syn, ack_flag, fin, rst bool, window uint16, data []byte) *Packet {
+	tcp := &layers.TCP{
+		SrcPort:    layers.TCPPort(srcPort),
+		DstPort:    layers.TCPPort(dstPort),
+		Seq:        seq,
+		Ack:        ack,
+		Window:     window,
+		DataOffset: 5,
+		SYN:        syn,
+		ACK:        ack_flag,
+		FIN:        fin,
+		RST:        rst,
 	}
 
-	// Write Data
-	if len(p.Data) > 0 {
-		if _, err := buf.Write(p.Data); err != nil {
-			return nil, err
+	return &Packet{
+		TCP:     tcp,
+		Payload: data,
+	}
+}
+
+// Encode serializes the packet to bytes
+func (p *Packet) Encode(srcIP, dstIP net.IP) ([]byte, error) {
+	// Normalize IPs to same version
+	srcIPv4 := srcIP.To4()
+	dstIPv4 := dstIP.To4()
+	
+	// Set network layer for checksum calculation
+	if srcIPv4 != nil && dstIPv4 != nil {
+		if err := p.TCP.SetNetworkLayerForChecksum(&layers.IPv4{
+			SrcIP:    srcIPv4,
+			DstIP:    dstIPv4,
+			Protocol: layers.IPProtocolTCP,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to set IPv4 network layer for checksum: %w", err)
+		}
+	} else {
+		if err := p.TCP.SetNetworkLayerForChecksum(&layers.IPv6{
+			SrcIP:      srcIP,
+			DstIP:      dstIP,
+			NextHeader: layers.IPProtocolTCP,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to set IPv6 network layer for checksum: %w", err)
 		}
 	}
 
-	return buf.Bytes(), nil
+	buffer := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{
+		ComputeChecksums: true,
+		FixLengths:       true,
+	}
+
+	var payload gopacket.Payload
+	if len(p.Payload) > 0 {
+		payload = gopacket.Payload(p.Payload)
+		if err := gopacket.SerializeLayers(buffer, opts, p.TCP, payload); err != nil {
+			return nil, fmt.Errorf("failed to serialize TCP packet with payload: %w", err)
+		}
+	} else {
+		if err := gopacket.SerializeLayers(buffer, opts, p.TCP); err != nil {
+			return nil, fmt.Errorf("failed to serialize TCP packet: %w", err)
+		}
+	}
+
+	return buffer.Bytes(), nil
 }
 
 // DecodePacket decodes a byte slice into a Packet
 func DecodePacket(data []byte) (*Packet, error) {
-	if len(data) < HeaderSize {
-		return nil, errors.New("packet too short")
+	packet := gopacket.NewPacket(data, layers.LayerTypeTCP, gopacket.Default)
+	
+	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	if tcpLayer == nil {
+		return nil, fmt.Errorf("not a valid TCP packet")
 	}
 
-	buf := bytes.NewReader(data)
-	var h PacketHeader
-
-	if err := binary.Read(buf, binary.BigEndian, &h.SeqNum); err != nil {
-		return nil, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &h.AckNum); err != nil {
-		return nil, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &h.Flags); err != nil {
-		return nil, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &h.WindowSize); err != nil {
-		return nil, err
-	}
-	if err := binary.Read(buf, binary.BigEndian, &h.DataLen); err != nil {
-		return nil, err
-	}
-
-	// Check if declared length matches actual remaining data
-	remaining := buf.Len()
-	if int(h.DataLen) > remaining {
-		return nil, fmt.Errorf("payload length mismatch: header says %d, got %d", h.DataLen, remaining)
-	}
-
-	payload := make([]byte, h.DataLen)
-	if h.DataLen > 0 {
-		if _, err := buf.Read(payload); err != nil {
-			return nil, err
-		}
-	}
-
+	tcp, _ := tcpLayer.(*layers.TCP)
+	
 	return &Packet{
-		Header: h,
-		Data:   payload,
+		TCP:     tcp,
+		Payload: tcp.Payload,
 	}, nil
 }
 
-// String returns a string representation of the packet for debugging
+// String returns a string representation of the packet
 func (p *Packet) String() string {
 	var flags []string
-	if p.Header.Flags&FlagSYN != 0 {
+	if p.TCP.SYN {
 		flags = append(flags, "SYN")
 	}
-	if p.Header.Flags&FlagACK != 0 {
+	if p.TCP.ACK {
 		flags = append(flags, "ACK")
 	}
-	if p.Header.Flags&FlagFIN != 0 {
+	if p.TCP.FIN {
 		flags = append(flags, "FIN")
 	}
-	if p.Header.Flags&FlagRST != 0 {
+	if p.TCP.RST {
 		flags = append(flags, "RST")
 	}
 	if len(flags) == 0 {
 		flags = append(flags, "NONE")
 	}
 
-	return fmt.Sprintf("Seq=%d Ack=%d Flags=%v Win=%d Len=%d",
-		p.Header.SeqNum, p.Header.AckNum, flags, p.Header.WindowSize, p.Header.DataLen)
+	return fmt.Sprintf("Seq=%d Ack=%d Flags=%v Win=%d Len=%d Src=%d Dst=%d",
+		p.TCP.Seq, p.TCP.Ack, flags, p.TCP.Window, len(p.Payload),
+		p.TCP.SrcPort, p.TCP.DstPort)
 }

@@ -8,20 +8,18 @@ import (
 	"time"
 )
 
-// Listener implements a TCP-like listener over UDP
 type Listener struct {
-	conn    net.PacketConn
-	conns   map[string]*Conn
-	mu      sync.Mutex
-	accept  chan *Conn
-	closed  bool
+	conn   net.PacketConn
+	conns  map[string]*Conn
+	mu     sync.Mutex
+	accept chan *Conn
+	closed bool
 }
 
-// Listen creates a new Listener
 func Listen(address string) (*Listener, error) {
 	conn, err := net.ListenPacket("udp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to listen on %s: %w", address, err)
 	}
 
 	l := &Listener{
@@ -35,7 +33,6 @@ func Listen(address string) (*Listener, error) {
 	return l, nil
 }
 
-// Accept waits for and returns the next connection to the listener
 func (l *Listener) Accept() (*Conn, error) {
 	c, ok := <-l.accept
 	if !ok {
@@ -44,21 +41,19 @@ func (l *Listener) Accept() (*Conn, error) {
 	return c, nil
 }
 
-// Close closes the listener
 func (l *Listener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	
+
 	if l.closed {
 		return nil
 	}
-	
+
 	l.closed = true
 	close(l.accept)
 	return l.conn.Close()
 }
 
-// Addr returns the listener's network address
 func (l *Listener) Addr() net.Addr {
 	return l.conn.LocalAddr()
 }
@@ -74,7 +69,6 @@ func (l *Listener) readLoop() {
 			return
 		}
 
-		// Decode packet to check flags
 		packet, err := DecodePacket(buf[:n])
 		if err != nil {
 			continue
@@ -83,15 +77,10 @@ func (l *Listener) readLoop() {
 		l.mu.Lock()
 		c, exists := l.conns[addr.String()]
 		if !exists {
-			// Handle new connection (SYN)
-			if packet.Header.Flags&FlagSYN != 0 {
+			if packet.TCP.SYN {
 				c = NewConn(l.conn, addr)
 				l.conns[addr.String()] = c
-				
-				// Transition to LISTEN state to accept SYN
 				c.state.ProcessEvent(tcpconn.PASSIVE_OPEN)
-				
-				// Pass to Accept loop
 				l.accept <- c
 			}
 		}
@@ -103,23 +92,19 @@ func (l *Listener) readLoop() {
 	}
 }
 
-// Dial connects to a remote address
 func Dial(address string) (*Conn, error) {
-	// Resolve address
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve UDP address %s: %w", address, err)
 	}
 
-	// Create a UDP connection
-	conn, err := net.ListenPacket("udp", ":0") // Ephemeral port
+	conn, err := net.ListenPacket("udp4", ":0")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create UDP client socket: %w", err)
 	}
 
 	c := NewConn(conn, raddr)
-	
-	// Start read loop for client
+
 	go func() {
 		buf := make([]byte, 65535)
 		for {
@@ -127,33 +112,29 @@ func Dial(address string) (*Conn, error) {
 			if err != nil {
 				return
 			}
-			
-			// Verify sender
+
 			if addr.String() != raddr.String() {
 				continue
 			}
-			
+
 			packet, err := DecodePacket(buf[:n])
 			if err != nil {
 				continue
 			}
-			
+
 			c.HandlePacket(packet)
 		}
 	}()
 
-	// Start Active Open
 	if err := c.state.ProcessEvent(tcpconn.ACTIVE_OPEN); err != nil {
-		return nil, err
-	}
-	
-	// Send SYN
-	c.seqNum = 100 
-	if err := c.sendControlPacket(FlagSYN); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to process ACTIVE_OPEN event: %w", err)
 	}
 
-	// Wait for ESTABLISHED state
+	c.seqNum = 100
+	if err := c.sendControlPacket(true, false, false, false); err != nil { // SYN
+		return nil, fmt.Errorf("failed to send SYN packet: %w", err)
+	}
+
 	for i := 0; i < 50; i++ {
 		if c.state.IsConnected() {
 			return c, nil
