@@ -2,6 +2,7 @@ package tcpv2
 
 import (
 	"net"
+	"strings"
 	"sync/atomic"
 	"tcpconn"
 	"testing"
@@ -13,9 +14,9 @@ import (
 // LossyPacketConn wraps net.PacketConn and drops packets randomly
 type LossyPacketConn struct {
 	net.PacketConn
-	dropCount   atomic.Int32
-	totalCount  atomic.Int32
-	dropEveryN  int32 // Drop every Nth packet
+	dropCount  atomic.Int32
+	totalCount atomic.Int32
+	dropEveryN int32 // Drop every Nth packet
 }
 
 func NewLossyPacketConn(conn net.PacketConn, dropEveryN int32) *LossyPacketConn {
@@ -27,14 +28,14 @@ func NewLossyPacketConn(conn net.PacketConn, dropEveryN int32) *LossyPacketConn 
 
 func (l *LossyPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	count := l.totalCount.Add(1)
-	
+
 	// Drop every Nth packet
 	if l.dropEveryN > 0 && count%l.dropEveryN == 0 {
 		l.dropCount.Add(1)
 		// Pretend we sent it
 		return len(p), nil
 	}
-	
+
 	return l.PacketConn.WriteTo(p, addr)
 }
 
@@ -149,22 +150,24 @@ func TestRetransmission_WithPacketLoss(t *testing.T) {
 	require.True(t, client.state.IsConnected(), "Connection should be established despite packet loss")
 
 	// Send data
-	testData := []byte("Hello with packet loss!")
+	testData := []byte(strings.Repeat("Hello with packet loss!\n", 100))
 	n, err := client.Write(testData)
 	require.NoError(t, err)
 	require.Equal(t, len(testData), n)
+	t.Logf("Sent %d bytes", n)
 
 	// Read echo
-	buf := make([]byte, 1024)
-	client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, len(testData))
 	n, err = client.Read(buf)
 	require.NoError(t, err)
-	require.Equal(t, testData, buf[:n])
+	t.Logf("Received %d bytes", n)
 
 	// Check that some packets were dropped and retransmitted
 	dropped, total := lossyConn.GetStats()
 	t.Logf("Packet loss stats: %d dropped out of %d total (%.1f%%)", dropped, total, float64(dropped)/float64(total)*100)
 	require.Greater(t, dropped, int32(0), "Some packets should have been dropped")
+	t.Logf("Response: %v", string(buf[:n]))
+	require.Equal(t, string(testData), string(buf))
 
 	client.Close()
 	<-serverDone
@@ -189,7 +192,7 @@ func TestRTO_Adaptation(t *testing.T) {
 
 	// Simulate first RTT measurement (100ms)
 	c.updateRTO(100 * time.Millisecond)
-	
+
 	// After first measurement: SRTT = RTT, RTTVAR = RTT/2
 	// RTO = SRTT + 4*RTTVAR = 100ms + 4*50ms = 300ms
 	require.Equal(t, 100*time.Millisecond, c.srtt)
@@ -199,14 +202,14 @@ func TestRTO_Adaptation(t *testing.T) {
 
 	// Simulate second RTT measurement (150ms)
 	c.updateRTO(150 * time.Millisecond)
-	
+
 	// SRTT should increase, RTTVAR should reflect variance
 	require.Greater(t, c.srtt, 100*time.Millisecond)
 	require.Less(t, c.srtt, 150*time.Millisecond)
-	
+
 	// RTO should be updated
 	require.Greater(t, c.rto, expectedRTO)
-	
+
 	t.Logf("After 2 measurements: SRTT=%v, RTTVAR=%v, RTO=%v", c.srtt, c.rttvar, c.rto)
 }
 

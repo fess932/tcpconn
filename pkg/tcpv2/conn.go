@@ -7,6 +7,8 @@ import (
 	"sync"
 	"tcpconn"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -330,6 +332,7 @@ func (c *Conn) retransmitLoop() {
 		case <-time.After(c.rto):
 			c.mu.Lock()
 			if len(c.sendQueue) > 0 {
+				log.Debug().Msgf("Retransmitting %d packets", len(c.sendQueue))
 				// Ретрансмиссия всех неподтвержденных пакетов
 				for seq, pkt := range c.sendQueue {
 					var srcIP, dstIP net.IP
