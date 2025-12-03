@@ -137,18 +137,10 @@ func (c *Conn) SetWriteDeadline(t time.Time) error { return errors.New("not impl
 func (c *Conn) sendPacketLocked(p *Packet) error {
 	var srcIP, dstIP net.IP
 	if addr, ok := c.localAddr.(*net.UDPAddr); ok {
-		if ipv4 := addr.IP.To4(); ipv4 != nil {
-			srcIP = ipv4
-		} else {
-			srcIP = addr.IP
-		}
+		srcIP = addr.IP.To4()
 	}
 	if addr, ok := c.remoteAddr.(*net.UDPAddr); ok {
-		if ipv4 := addr.IP.To4(); ipv4 != nil {
-			dstIP = ipv4
-		} else {
-			dstIP = addr.IP
-		}
+		dstIP = addr.IP.To4()
 	}
 
 	data, err := p.Encode(srcIP, dstIP)
@@ -279,18 +271,10 @@ func (c *Conn) retransmitLoop() {
 			for _, pkt := range c.sendQueue {
 				var srcIP, dstIP net.IP
 				if addr, ok := c.localAddr.(*net.UDPAddr); ok {
-					if ipv4 := addr.IP.To4(); ipv4 != nil {
-						srcIP = ipv4
-					} else {
-						srcIP = addr.IP
-					}
+					srcIP = addr.IP.To4()
 				}
 				if addr, ok := c.remoteAddr.(*net.UDPAddr); ok {
-					if ipv4 := addr.IP.To4(); ipv4 != nil {
-						dstIP = ipv4
-					} else {
-						dstIP = addr.IP
-					}
+					dstIP = addr.IP.To4()
 				}
 				data, _ := pkt.Encode(srcIP, dstIP)
 				c.conn.WriteTo(data, c.remoteAddr)

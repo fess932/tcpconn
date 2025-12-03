@@ -17,7 +17,7 @@ type Listener struct {
 }
 
 func Listen(address string) (*Listener, error) {
-	conn, err := net.ListenPacket("udp", address)
+	conn, err := net.ListenPacket("udp4", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to listen on %s: %w", address, err)
 	}

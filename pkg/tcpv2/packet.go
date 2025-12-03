@@ -35,29 +35,22 @@ func NewPacket(srcPort, dstPort uint16, seq, ack uint32, syn, ack_flag, fin, rst
 	}
 }
 
-// Encode serializes the packet to bytes
+// Encode serializes the packet to bytes (IPv4 only)
 func (p *Packet) Encode(srcIP, dstIP net.IP) ([]byte, error) {
-	// Normalize IPs to same version
+	// Convert to IPv4
 	srcIPv4 := srcIP.To4()
 	dstIPv4 := dstIP.To4()
+	if srcIPv4 == nil || dstIPv4 == nil {
+		return nil, fmt.Errorf("only IPv4 addresses are supported")
+	}
 	
 	// Set network layer for checksum calculation
-	if srcIPv4 != nil && dstIPv4 != nil {
-		if err := p.TCP.SetNetworkLayerForChecksum(&layers.IPv4{
-			SrcIP:    srcIPv4,
-			DstIP:    dstIPv4,
-			Protocol: layers.IPProtocolTCP,
-		}); err != nil {
-			return nil, fmt.Errorf("failed to set IPv4 network layer for checksum: %w", err)
-		}
-	} else {
-		if err := p.TCP.SetNetworkLayerForChecksum(&layers.IPv6{
-			SrcIP:      srcIP,
-			DstIP:      dstIP,
-			NextHeader: layers.IPProtocolTCP,
-		}); err != nil {
-			return nil, fmt.Errorf("failed to set IPv6 network layer for checksum: %w", err)
-		}
+	if err := p.TCP.SetNetworkLayerForChecksum(&layers.IPv4{
+		SrcIP:    srcIPv4,
+		DstIP:    dstIPv4,
+		Protocol: layers.IPProtocolTCP,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to set IPv4 network layer for checksum: %w", err)
 	}
 
 	buffer := gopacket.NewSerializeBuffer()
