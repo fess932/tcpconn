@@ -11,7 +11,9 @@ import (
 
 const (
 	DefaultWindowSize = 4096
-	RetransmitTimeout = 200 * time.Millisecond
+	MinRTO            = 200 * time.Millisecond  // RFC 6298: минимум 1 секунда, но для локальной сети используем меньше
+	MaxRTO            = 60 * time.Second
+	InitialRTO        = 1 * time.Second
 	MaxRetries        = 5
 )
 
@@ -29,6 +31,12 @@ type Conn struct {
 	seqNum    uint32
 	ackNum    uint32
 	remoteWin uint16
+
+	// RFC 6298 Retransmission Timer
+	srtt    time.Duration // Smoothed RTT
+	rttvar  time.Duration // RTT Variance
+	rto     time.Duration // Retransmission Timeout
+	sentTimes map[uint32]time.Time // Время отправки пакетов для измерения RTT
 
 	sendQueue    map[uint32]*Packet
 	receiveQueue map[uint32]*Packet
@@ -49,6 +57,8 @@ func NewConn(conn net.PacketConn, remoteAddr net.Addr) *Conn {
 		receiveQueue: make(map[uint32]*Packet),
 		closeChan:    make(chan struct{}),
 		remoteWin:    DefaultWindowSize,
+		rto:          InitialRTO,
+		sentTimes:    make(map[uint32]time.Time),
 	}
 	c.readBuffer, _ = tcpconn.NewRingBuffer(DefaultWindowSize)
 	c.writeBuffer, _ = tcpconn.NewRingBuffer(DefaultWindowSize)
@@ -154,6 +164,8 @@ func (c *Conn) sendPacketLocked(p *Packet) error {
 
 	if len(p.Payload) > 0 || p.TCP.SYN || p.TCP.FIN {
 		c.sendQueue[p.TCP.Seq] = p
+		// Запоминаем время отправки для измерения RTT
+		c.sentTimes[p.TCP.Seq] = time.Now()
 	}
 
 	return nil
@@ -211,6 +223,7 @@ func (c *Conn) HandlePacket(p *Packet) {
 			c.cond.Broadcast()
 		}
 
+		// Удаляем подтвержденные пакеты и измеряем RTT
 		for seq, pkt := range c.sendQueue {
 			pktEnd := seq
 			if len(pkt.Payload) > 0 {
@@ -220,6 +233,11 @@ func (c *Conn) HandlePacket(p *Packet) {
 			}
 
 			if p.TCP.Ack >= pktEnd {
+				// Измеряем RTT для этого пакета
+				if sentTime, ok := c.sentTimes[seq]; ok {
+					c.updateRTO(time.Since(sentTime))
+					delete(c.sentTimes, seq)
+				}
 				delete(c.sendQueue, seq)
 			}
 		}
@@ -258,26 +276,65 @@ func (c *Conn) HandlePacket(p *Packet) {
 	c.remoteWin = p.TCP.Window
 }
 
-func (c *Conn) retransmitLoop() {
-	ticker := time.NewTicker(RetransmitTimeout)
-	defer ticker.Stop()
+// updateRTO implements RFC 6298 RTO calculation
+func (c *Conn) updateRTO(rtt time.Duration) {
+	if c.srtt == 0 {
+		// Первое измерение RTT (RFC 6298 2.2)
+		c.srtt = rtt
+		c.rttvar = rtt / 2
+	} else {
+		// Последующие измерения (RFC 6298 2.3)
+		alpha := 0.125 // 1/8
+		beta := 0.25   // 1/4
+		
+		diff := c.srtt - rtt
+		if diff < 0 {
+			diff = -diff
+		}
+		
+		c.rttvar = time.Duration(float64(c.rttvar)*(1-beta) + float64(diff)*beta)
+		c.srtt = time.Duration(float64(c.srtt)*(1-alpha) + float64(rtt)*alpha)
+	}
+	
+	// RTO = SRTT + max(G, K*RTTVAR) где K=4, G=clock granularity
+	c.rto = c.srtt + 4*c.rttvar
+	
+	// Применяем границы (RFC 6298 2.4)
+	if c.rto < MinRTO {
+		c.rto = MinRTO
+	}
+	if c.rto > MaxRTO {
+		c.rto = MaxRTO
+	}
+}
 
+func (c *Conn) retransmitLoop() {
 	for {
 		select {
 		case <-c.closeChan:
 			return
-		case <-ticker.C:
+		case <-time.After(c.rto):
 			c.mu.Lock()
-			for _, pkt := range c.sendQueue {
-				var srcIP, dstIP net.IP
-				if addr, ok := c.localAddr.(*net.UDPAddr); ok {
-					srcIP = addr.IP.To4()
+			if len(c.sendQueue) > 0 {
+				// Ретрансмиссия всех неподтвержденных пакетов
+				for seq, pkt := range c.sendQueue {
+					var srcIP, dstIP net.IP
+					if addr, ok := c.localAddr.(*net.UDPAddr); ok {
+						srcIP = addr.IP.To4()
+					}
+					if addr, ok := c.remoteAddr.(*net.UDPAddr); ok {
+						dstIP = addr.IP.To4()
+					}
+					data, _ := pkt.Encode(srcIP, dstIP)
+					c.conn.WriteTo(data, c.remoteAddr)
+					// Обновляем время отправки для повторной передачи
+					c.sentTimes[seq] = time.Now()
 				}
-				if addr, ok := c.remoteAddr.(*net.UDPAddr); ok {
-					dstIP = addr.IP.To4()
+				// RFC 6298 5.5: При ретрансмиссии удваиваем RTO (exponential backoff)
+				c.rto *= 2
+				if c.rto > MaxRTO {
+					c.rto = MaxRTO
 				}
-				data, _ := pkt.Encode(srcIP, dstIP)
-				c.conn.WriteTo(data, c.remoteAddr)
 			}
 			c.mu.Unlock()
 		}
