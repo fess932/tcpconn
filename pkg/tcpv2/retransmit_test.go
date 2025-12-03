@@ -2,7 +2,6 @@ package tcpv2
 
 import (
 	"net"
-	"sync"
 	"sync/atomic"
 	"tcpconn"
 	"testing"
@@ -17,7 +16,6 @@ type LossyPacketConn struct {
 	dropCount   atomic.Int32
 	totalCount  atomic.Int32
 	dropEveryN  int32 // Drop every Nth packet
-	mu          sync.Mutex
 }
 
 func NewLossyPacketConn(conn net.PacketConn, dropEveryN int32) *LossyPacketConn {

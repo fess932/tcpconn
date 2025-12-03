@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	DefaultWindowSize = 4096
-	MinRTO            = 200 * time.Millisecond  // RFC 6298: минимум 1 секунда, но для локальной сети используем меньше
+	DefaultWindowSize = 0xFFFF
+	MinRTO            = 200 * time.Millisecond // RFC 6298: минимум 1 секунда, но для локальной сети используем меньше
 	MaxRTO            = 60 * time.Second
 	InitialRTO        = 1 * time.Second
 	MaxRetries        = 5
@@ -33,9 +33,9 @@ type Conn struct {
 	remoteWin uint16
 
 	// RFC 6298 Retransmission Timer
-	srtt    time.Duration // Smoothed RTT
-	rttvar  time.Duration // RTT Variance
-	rto     time.Duration // Retransmission Timeout
+	srtt      time.Duration        // Smoothed RTT
+	rttvar    time.Duration        // RTT Variance
+	rto       time.Duration        // Retransmission Timeout
 	sentTimes map[uint32]time.Time // Время отправки пакетов для измерения RTT
 
 	sendQueue    map[uint32]*Packet
@@ -45,6 +45,9 @@ type Conn struct {
 
 	closeChan chan struct{}
 	closed    bool
+
+	connected chan struct{}
+	reset     chan struct{}
 }
 
 func NewConn(conn net.PacketConn, remoteAddr net.Addr) *Conn {
@@ -59,10 +62,21 @@ func NewConn(conn net.PacketConn, remoteAddr net.Addr) *Conn {
 		remoteWin:    DefaultWindowSize,
 		rto:          InitialRTO,
 		sentTimes:    make(map[uint32]time.Time),
+		connected:    make(chan struct{}),
+		reset:        make(chan struct{}),
 	}
 	c.readBuffer, _ = tcpconn.NewRingBuffer(DefaultWindowSize)
 	c.writeBuffer, _ = tcpconn.NewRingBuffer(DefaultWindowSize)
 	c.cond = sync.NewCond(&c.mu)
+
+	c.state.SetStateChangeCallback(func(oldState, newState tcpconn.TCPState, event tcpconn.TCPEvent) {
+		if newState == tcpconn.ESTABLISHED {
+			close(c.connected)
+		}
+		if newState == tcpconn.CLOSED {
+			close(c.closeChan)
+		}
+	})
 
 	go c.retransmitLoop()
 
@@ -286,19 +300,19 @@ func (c *Conn) updateRTO(rtt time.Duration) {
 		// Последующие измерения (RFC 6298 2.3)
 		alpha := 0.125 // 1/8
 		beta := 0.25   // 1/4
-		
+
 		diff := c.srtt - rtt
 		if diff < 0 {
 			diff = -diff
 		}
-		
+
 		c.rttvar = time.Duration(float64(c.rttvar)*(1-beta) + float64(diff)*beta)
 		c.srtt = time.Duration(float64(c.srtt)*(1-alpha) + float64(rtt)*alpha)
 	}
-	
+
 	// RTO = SRTT + max(G, K*RTTVAR) где K=4, G=clock granularity
 	c.rto = c.srtt + 4*c.rttvar
-	
+
 	// Применяем границы (RFC 6298 2.4)
 	if c.rto < MinRTO {
 		c.rto = MinRTO

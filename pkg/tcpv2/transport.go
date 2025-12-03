@@ -135,15 +135,14 @@ func Dial(address string) (*Conn, error) {
 		return nil, fmt.Errorf("failed to send SYN packet: %w", err)
 	}
 
-	for i := 0; i < 50; i++ {
-		if c.state.IsConnected() {
-			return c, nil
-		}
-		if c.state.IsClosed() && i > 5 {
-			return nil, fmt.Errorf("connection refused or reset")
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	select {
+	case <-c.connected:
+		return c, nil
 
-	return nil, fmt.Errorf("handshake timeout")
+	case <-c.reset:
+		return nil, fmt.Errorf("connection reset by peer")
+
+	case <-time.After(5 * time.Second):
+		return nil, fmt.Errorf("handshake timeout")
+	}
 }
