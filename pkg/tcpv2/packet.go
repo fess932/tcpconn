@@ -6,7 +6,12 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+	"github.com/rs/zerolog"
 )
+
+func init() {
+	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+}
 
 // Packet represents a TCP packet
 type Packet struct {
@@ -43,7 +48,7 @@ func (p *Packet) Encode(srcIP, dstIP net.IP) ([]byte, error) {
 	if srcIPv4 == nil || dstIPv4 == nil {
 		return nil, fmt.Errorf("only IPv4 addresses are supported")
 	}
-	
+
 	// Set network layer for checksum calculation
 	if err := p.TCP.SetNetworkLayerForChecksum(&layers.IPv4{
 		SrcIP:    srcIPv4,
@@ -77,14 +82,14 @@ func (p *Packet) Encode(srcIP, dstIP net.IP) ([]byte, error) {
 // DecodePacket decodes a byte slice into a Packet
 func DecodePacket(data []byte) (*Packet, error) {
 	packet := gopacket.NewPacket(data, layers.LayerTypeTCP, gopacket.Default)
-	
+
 	tcpLayer := packet.Layer(layers.LayerTypeTCP)
 	if tcpLayer == nil {
 		return nil, fmt.Errorf("not a valid TCP packet")
 	}
 
 	tcp, _ := tcpLayer.(*layers.TCP)
-	
+
 	return &Packet{
 		TCP:     tcp,
 		Payload: tcp.Payload,

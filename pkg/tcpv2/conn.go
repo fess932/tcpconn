@@ -17,6 +17,9 @@ const (
 	MaxRTO            = 60 * time.Second
 	InitialRTO        = 1 * time.Second
 	MaxRetries        = 5
+
+	MTU = 1500
+	MSS = MTU - 20 - 8 - 20 // mtu - ip_header - udp_header - tcp_header
 )
 
 // Conn implements net.Conn over UDP with TCP-like reliability
@@ -109,10 +112,11 @@ func (c *Conn) Write(b []byte) (n int, err error) {
 
 	totalSent := 0
 	for totalSent < len(b) {
-		chunkSize := 1000
+		chunkSize := MSS
 		if len(b)-totalSent < chunkSize {
 			chunkSize = len(b) - totalSent
 		}
+		log.Debug().Msgf("Write total sent %d", totalSent)
 
 		chunk := b[totalSent : totalSent+chunkSize]
 		packet := NewPacket(

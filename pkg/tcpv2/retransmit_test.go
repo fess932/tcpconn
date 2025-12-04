@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,6 +69,9 @@ func TestRetransmission_WithPacketLoss(t *testing.T) {
 		if err != nil || !synPkt.TCP.SYN {
 			return
 		}
+		if synPkt.TCP.SYN {
+			t.Logf("Server read SYN %d bytes", n)
+		}
 
 		// Create server connection
 		serverConn := NewConn(serverListener, clientAddr)
@@ -79,12 +83,15 @@ func TestRetransmission_WithPacketLoss(t *testing.T) {
 
 		// Read incoming packets in background
 		go func() {
-			buf := make([]byte, 65535)
+			buf := make([]byte, DefaultWindowSize)
 			for {
 				n, addr, err := serverListener.ReadFrom(buf)
 				if err != nil {
 					return
 				}
+				t.Logf("Server read %d bytes", n)
+
+				log.Debug().Msgf("server readed bytes %d", n)
 				if addr.String() != clientAddr.String() {
 					continue
 				}
@@ -97,13 +104,16 @@ func TestRetransmission_WithPacketLoss(t *testing.T) {
 		}()
 
 		// Wait for data
-		time.Sleep(100 * time.Millisecond)
-		dataBuf := make([]byte, 1024)
+		// ser
+		dataBuf := make([]byte, DefaultWindowSize)
 		n, err = serverConn.Read(dataBuf)
+		require.NoError(t, err)
 		if err == nil {
 			// Echo back
 			serverConn.Write(dataBuf[:n])
 		}
+		t.Logf("Server echo sent bytes %d", n)
+
 	}()
 
 	// Client with lossy connection (drop every 3rd packet)
@@ -146,11 +156,11 @@ func TestRetransmission_WithPacketLoss(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for connection
-	time.Sleep(200 * time.Millisecond)
+	<-client.connected
 	require.True(t, client.state.IsConnected(), "Connection should be established despite packet loss")
 
 	// Send data
-	testData := []byte(strings.Repeat("Hello with packet loss!\n", 100))
+	testData := []byte(strings.Repeat("X\n", 1024*5))
 	n, err := client.Write(testData)
 	require.NoError(t, err)
 	require.Equal(t, len(testData), n)
@@ -167,6 +177,7 @@ func TestRetransmission_WithPacketLoss(t *testing.T) {
 	t.Logf("Packet loss stats: %d dropped out of %d total (%.1f%%)", dropped, total, float64(dropped)/float64(total)*100)
 	require.Greater(t, dropped, int32(0), "Some packets should have been dropped")
 	t.Logf("Response: %v", string(buf[:n]))
+	require.Equal(t, len(testData), len(buf))
 	require.Equal(t, string(testData), string(buf))
 
 	client.Close()

@@ -92,7 +92,7 @@ func (l *Listener) readLoop() {
 	}
 }
 
-func Dial(address string) (*Conn, error) {
+func Dial(address string) (net.Conn, error) {
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve UDP address %s: %w", address, err)
